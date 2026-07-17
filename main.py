@@ -175,6 +175,28 @@ def obtener_metricas_dashboard():
             detail=f"Error al recuperar métricas: {str(e)}"
         )
 
+@app.get("/dashboard/comparison")
+def obtener_comparativa_escenarios():
+    """
+    Devuelve las métricas de comparación entre el Escenario Tradicional (A) y el Enriquecido (B).
+    Se leen directamente del archivo scenario_comparison.json.
+    """
+    comparison_path = "static/scenario_comparison.json"
+    if not os.path.exists(comparison_path):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Las métricas de comparación no están disponibles aún. Ejecute el script offline 'generate_comparison_json.py'."
+        )
+    try:
+        with open(comparison_path, 'r', encoding='utf-8') as f:
+            comp_data = json.load(f)
+        return comp_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al recuperar métricas comparativas: {str(e)}"
+        )
+
 @app.get("/reports/download/{format_type}")
 def descargar_reporte(format_type: str):
     """

@@ -3,11 +3,12 @@ import Login from './components/Login';
 import Evaluador from './components/Evaluador';
 import Dashboard from './components/Dashboard';
 import PruebasEstadisticas from './components/PruebasEstadisticas';
-import { FileText, BarChart3, LogOut, ShieldCheck, Scale } from 'lucide-react';
+import ComparacionEscenarios from './components/ComparacionEscenarios';
+import { FileText, BarChart3, LogOut, ShieldCheck, Scale, GitCompare } from 'lucide-react';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [activeView, setActiveView] = useState('evaluador'); // 'evaluador' | 'dashboard' | 'pruebas'
+  const [activeView, setActiveView] = useState('evaluador'); // 'evaluador' | 'dashboard' | 'pruebas' | 'comparacion'
 
   if (!isAuthenticated) {
     return <Login onLogin={setIsAuthenticated} />;
@@ -70,6 +71,18 @@ export default function App() {
               <Scale className="w-4 h-4" />
               <span>Pruebas Estadísticas</span>
             </button>
+
+            <button
+              onClick={() => setActiveView('comparacion')}
+              className={`w-full px-4 py-3 rounded-lg text-xs font-semibold flex items-center gap-3 transition-all duration-300 ${
+                activeView === 'comparacion'
+                  ? 'bg-blue-600/15 text-blue-400 border border-blue-500/20 shadow-[0_0_15px_rgba(37,99,235,0.05)]'
+                  : 'text-gray-400 hover:text-white hover:bg-navy-850 border border-transparent'
+              }`}
+            >
+              <GitCompare className="w-4 h-4" />
+              <span>Comparación Escenarios</span>
+            </button>
           </nav>
         </div>
 
@@ -90,6 +103,7 @@ export default function App() {
         {activeView === 'evaluador' && <Evaluador />}
         {activeView === 'dashboard' && <Dashboard />}
         {activeView === 'pruebas' && <PruebasEstadisticas />}
+        {activeView === 'comparacion' && <ComparacionEscenarios />}
       </main>
     </div>
   );

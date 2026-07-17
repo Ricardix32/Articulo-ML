@@ -1,0 +1,280 @@
+import psycopg2
+import pandas as pd
+import numpy as np
+import joblib
+import json
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_curve, auc, confusion_matrix, recall_score, f1_score
+from scipy.stats import chi2
+
+def clean_column_names(df):
+    clean_cols = []
+    for col in df.columns:
+        clean_col = re.sub(r'[{}":,\[\]]', '_', col)
+        clean_cols.append(clean_col)
+    df.columns = clean_cols
+    return df
+
+def main():
+    print("Conectando a PostgreSQL...")
+    conn = psycopg2.connect(
+        host="localhost",
+        port="5432",
+        dbname="credit_risk_warehouse",
+        user="etl_admin",
+        password="etl_pass_seguro"
+    )
+    
+    query = "SELECT * FROM gold.vw_analisis_riesgo_crediticio"
+    print("Leyendo datos de la vista...")
+    df = pd.read_sql(query, conn)
+    conn.close()
+    
+    print(f"Se leyeron {len(df)} registros.")
+    
+    # Separar la porción de test (20%) de manera idéntica usando random_state=42 y estratificación
+    df_train, df_test = train_test_split(
+        df, test_size=0.20, random_state=42, stratify=df['flag_morosidad']
+    )
+    
+    y_test = df_test['flag_morosidad'].astype(int).values
+    
+    # ----------------------------------------------------
+    # ESCENARIO A: TRADICIONAL (_2)
+    # ----------------------------------------------------
+    print("Evaluando Escenario A (Tradicional)...")
+    cols_traditional = [
+        'monto_credito_solicitado', 'ingresos_totales_cliente', 'monto_anualidad_credito',
+        'ratio_credito_ingreso', 'ratio_anualidad_ingreso', 'cantidad_hijos',
+        'genero', 'nivel_educativo', 'estado_civil'
+    ]
+    
+    X_trad = df_test[cols_traditional].copy()
+    X_trad_encoded = pd.get_dummies(X_trad, drop_first=True)
+    X_trad_encoded = clean_column_names(X_trad_encoded)
+    
+    # Convertir booleanas a int
+    for col in X_trad_encoded.select_dtypes(include=['bool']).columns:
+        X_trad_encoded[col] = X_trad_encoded[col].astype(int)
+        
+    columnas_2 = joblib.load("columnas_modelo_2.pkl")
+    X_trad_aligned = X_trad_encoded.reindex(columns=columnas_2, fill_value=0)
+    
+    model_2 = joblib.load("modelo_riesgo_lgbm_2.pkl")
+    probs_trad = model_2.predict_proba(X_trad_aligned)[:, 1]
+    
+    # ----------------------------------------------------
+    # ESCENARIO B: ENRIQUECIDO
+    # ----------------------------------------------------
+    print("Evaluando Escenario B (Enriquecido)...")
+    rename_dict = {
+        'monto_credito_solicitado': 'amt_credit',
+        'ingresos_totales_cliente': 'amt_income_total',
+        'monto_anualidad_credito': 'amt_annuity',
+        'genero': 'CODE_GENDER',
+        'nivel_educativo': 'NAME_EDUCATION_TYPE',
+        'sector_economico': 'ORGANIZATION_TYPE',
+        'flag_morosidad': 'default'
+    }
+    
+    df_enr_test = df_test.copy()
+    df_enr_test.rename(columns=rename_dict, inplace=True)
+    
+    # Calcular ratios
+    ingreso = df_enr_test['amt_income_total']
+    df_enr_test['credit_to_income_ratio'] = df_enr_test['amt_credit'] / ingreso.apply(lambda x: x if x > 0 else 1.0)
+    df_enr_test['annuity_income_ratio'] = df_enr_test['amt_annuity'] / ingreso.apply(lambda x: x if x > 0 else 1.0)
+    
+    cols_enr = [
+        'edad_anios', 'antiguedad_laboral_anios', 'amt_income_total', 
+        'amt_credit', 'amt_annuity', 'calificacion_region_ciudad', 
+        'credit_to_income_ratio', 'annuity_income_ratio',
+        'CODE_GENDER', 'ORGANIZATION_TYPE', 'NAME_EDUCATION_TYPE'
+    ]
+    
+    X_enr = df_enr_test[cols_enr].copy()
+    X_enr_encoded = pd.get_dummies(X_enr, drop_first=True)
+    X_enr_encoded = clean_column_names(X_enr_encoded)
+    
+    # Convertir booleanas a int
+    for col in X_enr_encoded.select_dtypes(include=['bool']).columns:
+        X_enr_encoded[col] = X_enr_encoded[col].astype(int)
+        
+    columnas_1 = joblib.load("columnas_modelo.pkl")
+    X_enr_aligned = X_enr_encoded.reindex(columns=columnas_1, fill_value=0)
+    
+    model_1 = joblib.load("modelo_riesgo_lgbm.pkl")
+    probs_enr = model_1.predict_proba(X_enr_aligned)[:, 1]
+    
+    # ----------------------------------------------------
+    # METRICAS DE EVALUACION
+    # ----------------------------------------------------
+    print("Calculando metricas y curvas...")
+    # Umbral por defecto de calibración en la API
+    threshold = 0.40
+    preds_trad = (probs_trad >= threshold).astype(int)
+    preds_enr = (probs_enr >= threshold).astype(int)
+    
+    # AUC-ROC
+    fpr_t, tpr_t, _ = roc_curve(y_test, probs_trad)
+    fpr_e, tpr_e, _ = roc_curve(y_test, probs_enr)
+    
+    auc_t = auc(fpr_t, tpr_t)
+    auc_e = auc(fpr_e, tpr_e)
+    
+    # Reducir curvas ROC a una cuadrícula regular de 100 puntos para optimizar JSON
+    grid = np.linspace(0, 1, 100)
+    tpr_t_interp = np.interp(grid, fpr_t, tpr_t)
+    tpr_e_interp = np.interp(grid, fpr_e, tpr_e)
+    
+    # Matrices de Confusión
+    cm_t = confusion_matrix(y_test, preds_trad)
+    cm_e = confusion_matrix(y_test, preds_enr)
+    
+    # Sensibilidad (Recall) y F1-score
+    recall_t = recall_score(y_test, preds_trad)
+    recall_e = recall_score(y_test, preds_enr)
+    f1_t = f1_score(y_test, preds_trad)
+    f1_e = f1_score(y_test, preds_enr)
+    
+    # ----------------------------------------------------
+    # TEST DE MCNEMAR INTER-ESCENARIO
+    # ----------------------------------------------------
+    print("Aplicando el Test de McNemar Inter-Escenario...")
+    # Matriz de contingencia inter-escenario (aciertos y errores)
+    correct_trad = (preds_trad == y_test)
+    correct_enr = (preds_enr == y_test)
+    
+    c_00 = np.sum(correct_trad & correct_enr)
+    c_01 = np.sum(correct_trad & ~correct_enr)
+    c_10 = np.sum(~correct_trad & correct_enr)
+    c_11 = np.sum(~correct_trad & ~correct_enr)
+    
+    contingency_table = [[int(c_00), int(c_01)], [int(c_10), int(c_11)]]
+    
+    # Calcular test McNemar con corrección de Edwards
+    b = c_01
+    c = c_10
+    denominador = b + c
+    if denominador > 0:
+        chi2_stat = (abs(b - c) - 1) ** 2 / denominador
+        p_val = chi2.sf(chi2_stat, 1)
+    else:
+        chi2_stat = 0.0
+        p_val = 1.0
+        
+    mcnemar_data = {
+        "contingency_table": contingency_table,
+        "statistic": float(chi2_stat),
+        "p_value": float(p_val),
+        "significant": bool(p_val < 0.05)
+    }
+
+    # ----------------------------------------------------
+    # GUARDAR RESULTADOS
+    # ----------------------------------------------------
+    comparison_data = {
+        "metadata": {
+            "total_test_records": int(len(y_test)),
+            "default_rate": float(np.mean(y_test)),
+            "threshold": threshold
+        },
+        "escenario_a": {
+            "nombre": "Tradicional (Escenario A)",
+            "auc": float(auc_t),
+            "recall": float(recall_t),
+            "f1_score": float(f1_t),
+            "confusion_matrix": {
+                "tn": int(cm_t[0][0]),
+                "fp": int(cm_t[0][1]),
+                "fn": int(cm_t[1][0]),
+                "vp": int(cm_t[1][1])
+            },
+            "tpr_grid": tpr_t_interp.tolist()
+        },
+        "escenario_b": {
+            "nombre": "Enriquecido (Escenario B)",
+            "auc": float(auc_e),
+            "recall": float(recall_e),
+            "f1_score": float(f1_e),
+            "confusion_matrix": {
+                "tn": int(cm_e[0][0]),
+                "fp": int(cm_e[0][1]),
+                "fn": int(cm_e[1][0]),
+                "vp": int(cm_e[1][1])
+            },
+            "tpr_grid": tpr_e_interp.tolist()
+        },
+        "fpr_grid": grid.tolist(),
+        "mcnemar": mcnemar_data,
+        "delta": {
+            "auc": float(auc_e - auc_t),
+            "recall": float(recall_e - recall_t),
+            "f1_score": float(f1_e - f1_t),
+            "falsos_negativos_reduccion": int(cm_t[1][0] - cm_e[1][0])
+        }
+    }
+    
+    output_path = "static/scenario_comparison.json"
+    with open(output_path, "w") as f:
+        json.dump(comparison_data, f, indent=2)
+        
+    # ----------------------------------------------------
+    # GENERAR IMAGENES DE COMPARACION PARA EL FRONTEND (REACT)
+    # ----------------------------------------------------
+    print("Guardando graficos comparativos en static/...")
+    import matplotlib.pyplot as plt
+    
+    # 1. Curvas ROC Superpuestas
+    plt.figure(figsize=(6, 5))
+    plt.plot(grid, tpr_e_interp, label=f"Enriquecido (AUC = {auc_e:.4f})", color="#2563eb", linewidth=2.5)
+    plt.plot(grid, tpr_t_interp, label=f"Tradicional (AUC = {auc_t:.4f})", color="#fbbf24", linewidth=2)
+    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+    
+    plt.title("Curvas ROC Superpuestas (Delta Estadistico)", fontsize=12, fontweight='bold')
+    plt.xlabel("Tasa de Falsos Positivos (FPR)", fontsize=10)
+    plt.ylabel("Tasa de Verdaderos Positivos (TPR)", fontsize=10)
+    plt.legend(loc="lower right")
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.tight_layout()
+    plt.savefig("static/scenario_comparison_roc.png", dpi=150)
+    plt.close()
+    
+    # 2. Impacto de Negocio (Grouped Bar Chart de Cartera Sana)
+    categories = ['Falsos Positivos\n(Clientes Rechazados)', 'Verdaderos Negativos\n(Clientes Aprobados)']
+    trad_counts = [int(cm_t[0][1]), int(cm_t[0][0])]
+    enr_counts = [int(cm_e[0][1]), int(cm_e[0][0])]
+    
+    x = np.arange(len(categories))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.bar(x - width/2, trad_counts, width, label='Tradicional (A)', color='#fbbf24')
+    ax.bar(x + width/2, enr_counts, width, label='Enriquecido (B)', color='#2563eb')
+    
+    ax.set_title("Impacto de Negocio en la Cartera Sana", fontsize=12, fontweight='bold')
+    ax.set_ylabel("Cantidad de Clientes", fontsize=10)
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, fontsize=9)
+    ax.legend(loc="upper left")
+    ax.grid(True, linestyle=':', alpha=0.6)
+    
+    # Añadir valores numéricos en la parte superior de cada barra
+    for i, val in enumerate(trad_counts):
+        ax.text(i - width/2, val + (max(trad_counts)*0.01), f"{val:,}", ha='center', fontsize=9, fontweight='bold')
+    for i, val in enumerate(enr_counts):
+        ax.text(i + width/2, val + (max(enr_counts)*0.01), f"{val:,}", ha='center', fontsize=9, fontweight='bold')
+        
+    plt.tight_layout()
+    plt.savefig("static/scenario_comparison_business.png", dpi=150)
+    plt.close()
+        
+    print(f"Archivo de comparacion guardado con exito en: {output_path}")
+    print(f"Delta AUC: +{auc_e - auc_t:.4f}")
+    print(f"Delta Recall (Sensibilidad): +{recall_e - recall_t:.4f}")
+    print(f"Reduccion de Falsos Negativos (Creditos Incobrables): {cm_t[1][0] - cm_e[1][0]} creditos detectados adicionales.")
+    print(f"p-valor de McNemar Inter-Escenario: {p_val:.6f} (Significativo: {p_val < 0.05})")
+
+if __name__ == "__main__":
+    main()
