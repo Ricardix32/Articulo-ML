@@ -43,7 +43,7 @@ export default function ComparacionEscenarios() {
     );
   }
 
-  const { escenario_a, escenario_b, mcnemar, delta } = data;
+  const { escenario_a, escenario_b, mcnemar, delong, delta } = data;
   const reduccionFP = escenario_a.confusion_matrix.fp - escenario_b.confusion_matrix.fp;
 
   return (
@@ -99,7 +99,16 @@ export default function ComparacionEscenarios() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Gráfico ROC */}
         <div className="glass p-6 rounded-xl space-y-4">
-          <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">1. Curvas ROC Superpuestas (Delta Estadístico)</h4>
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">1. Curvas ROC Superpuestas (Delta Estadístico)</h4>
+            {delong && (
+              <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                delong.significant ? 'bg-green-500/10 text-green-400 animate-pulse' : 'bg-orange-500/10 text-orange-400'
+              }`}>
+                {delong.significant ? 'DeLong: Significativo (p < 0.05)' : 'DeLong: No Sig.'}
+              </span>
+            )}
+          </div>
           <div className="bg-navy-950/40 p-2 rounded-lg border border-navy-900">
             <img 
               src={`${API_BASE_URL}/static/scenario_comparison_roc.png`} 
@@ -107,6 +116,27 @@ export default function ComparacionEscenarios() {
               className="w-full h-auto rounded"
             />
           </div>
+          {delong && (
+            <div className="p-3 bg-navy-900/60 rounded-lg border border-navy-850 space-y-1.5">
+              <div className="flex justify-between text-[11px]">
+                <span className="text-gray-400">Estadístico Z de DeLong:</span>
+                <span className="text-white font-mono font-semibold">{delong.z_statistic.toFixed(4)}</span>
+              </div>
+              <div className="flex justify-between text-[11px]">
+                <span className="text-gray-400">p-valor de DeLong:</span>
+                <span className="text-white font-mono font-semibold">{delong.p_value.toFixed(6)}</span>
+              </div>
+              {delong.significant ? (
+                <p className="text-[10px] text-green-400/90 font-medium">
+                  ✔ La diferencia en capacidad discriminante (AUC) es estadísticamente significativa (p &lt; 0.05).
+                </p>
+              ) : (
+                <p className="text-[10px] text-orange-400/90">
+                  La diferencia en capacidad discriminante (AUC) no es estadísticamente significativa.
+                </p>
+              )}
+            </div>
+          )}
           <p className="text-[11px] text-gray-400 leading-relaxed">
             El escenario Tradicional (A) exhibe un AUC ligeramente mayor, pero genera sobre-rechazo severo. La versión Enriquecida (B) balancea la tasa de error para favorecer la colocación comercial.
           </p>

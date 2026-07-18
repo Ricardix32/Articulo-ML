@@ -31,3 +31,5 @@ frontend/dist-ssr/
 *.swp
 *.DS_Store
 Thumbs.db
+
+ambiente_computacional.md

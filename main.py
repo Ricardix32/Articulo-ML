@@ -30,33 +30,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Variables globales para el modelo y columnas de inferencia
+# Variables globales para carga dual de modelos
+modelo_enriquecido = None
+columnas_enriquecidas = None
+modelo_tradicional = None
+columnas_tradicionales = None
+modelos_cargados = False
+
+# Variables de compatibilidad
 modelo_produccion = None
 columnas_requeridas = None
 modelo_cargado = False
 
 def cargar_modelo():
     """
-    Intenta cargar el modelo de producción y su lista de columnas.
-    Si no existen, permite que la API arranque y esperará al entrenamiento.
+    Carga simultáneamente los modelos Tradicional (A) y Enriquecido (B)
+    junto con sus respectivas estructuras de columnas.
     """
+    global modelo_enriquecido, columnas_enriquecidas
+    global modelo_tradicional, columnas_tradicionales
+    global modelos_cargados
     global modelo_produccion, columnas_requeridas, modelo_cargado
+    
     try:
-        modelo_path = 'modelo_riesgo_lgbm.pkl'
-        columnas_path = 'columnas_modelo.pkl'
+        path_enr_model = 'modelo_riesgo_lgbm.pkl'
+        path_enr_cols = 'columnas_modelo.pkl'
+        path_trad_model = 'modelo_riesgo_lgbm_2.pkl'
+        path_trad_cols = 'columnas_modelo_2.pkl'
         
-        if os.path.exists(modelo_path) and os.path.exists(columnas_path):
-            modelo_produccion = joblib.load(modelo_path)
-            columnas_requeridas = joblib.load(columnas_path)
+        if (os.path.exists(path_enr_model) and os.path.exists(path_enr_cols) and
+            os.path.exists(path_trad_model) and os.path.exists(path_trad_cols)):
+            
+            modelo_enriquecido = joblib.load(path_enr_model)
+            columnas_enriquecidas = joblib.load(path_enr_cols)
+            
+            modelo_tradicional = joblib.load(path_trad_model)
+            columnas_tradicionales = joblib.load(path_trad_cols)
+            
+            # Compatibilidad
+            modelo_produccion = modelo_enriquecido
+            columnas_requeridas = columnas_enriquecidas
             modelo_cargado = True
-            print("✅ Artefactos de ML cargados exitosamente.")
+            
+            modelos_cargados = True
+            print("✅ Carga Dual de Modelos completada (Tradicional y Enriquecido en memoria).")
         else:
+            modelos_cargados = False
             modelo_cargado = False
-            print("⚠️ Advertencia: Archivos de modelo 'modelo_riesgo_lgbm.pkl' o 'columnas_modelo.pkl' no encontrados.")
-            print("💡 Ejecute el script offline 'model_pipeline.py' para entrenar los modelos y generarlos.")
+            print("⚠️ Advertencia: Algunos archivos de modelos o columnas no fueron encontrados.")
+            print("💡 Por favor, asegúrese de contar con: modelo_riesgo_lgbm.pkl, columnas_modelo.pkl, modelo_riesgo_lgbm_2.pkl, columnas_modelo_2.pkl.")
     except Exception as e:
+        modelos_cargados = False
         modelo_cargado = False
-        print(f"⚠️ Error al cargar el modelo de producción: {e}")
+        print(f"⚠️ Error en la carga dual de modelos: {e}")
 
 # Intento inicial al importar el módulo
 cargar_modelo()
@@ -151,6 +177,95 @@ def predecir_riesgo(cliente: ClienteCredito):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error en el motor predictivo: {str(e)}"
+        )
+
+@app.post("/predict_compare")
+def predecir_riesgo_dual(cliente: ClienteCredito):
+    global modelo_enriquecido, columnas_enriquecidas, modelo_tradicional, columnas_tradicionales, modelos_cargados
+    
+    if not modelos_cargados:
+        cargar_modelo()
+        
+    if not modelos_cargados:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Los modelos predictivos no están listos. Ejecute el entrenamiento primero."
+        )
+        
+    try:
+        # A. PROCESAMIENTO MODELO ENRIQUECIDO (B)
+        data_dict_enr = cliente.dict()
+        ingreso = data_dict_enr['amt_income_total']
+        data_dict_enr['credit_to_income_ratio'] = data_dict_enr['amt_credit'] / ingreso if ingreso > 0 else 0.0
+        data_dict_enr['annuity_income_ratio'] = data_dict_enr['amt_annuity'] / ingreso if ingreso > 0 else 0.0
+        
+        df_input_enr = pd.DataFrame([data_dict_enr])
+        df_ohe_enr = pd.get_dummies(df_input_enr)
+        df_ohe_enr.columns = [re.sub(r'[{}":,\[\]]', '_', col) for col in df_ohe_enr.columns]
+        
+        # Convertir booleanas
+        for col in df_ohe_enr.select_dtypes(include=['bool']).columns:
+            df_ohe_enr[col] = df_ohe_enr[col].astype(int)
+            
+        df_inf_enr = pd.DataFrame(columns=columnas_enriquecidas)
+        for col in columnas_enriquecidas:
+            if col in df_ohe_enr.columns:
+                df_inf_enr[col] = df_ohe_enr[col]
+            else:
+                df_inf_enr[col] = 0
+                
+        for col in df_inf_enr.columns:
+            if df_inf_enr[col].dtype == 'bool':
+                df_inf_enr[col] = df_inf_enr[col].astype(int)
+                
+        prob_enr = float(modelo_enriquecido.predict_proba(df_inf_enr)[0][1] * 100)
+        estado_enr = "APROBADO" if prob_enr < 40.0 else "RECHAZADO"
+        
+        # B. PROCESAMIENTO MODELO TRADICIONAL (A)
+        data_dict_trad = {
+            'monto_credito_solicitado': cliente.amt_credit,
+            'ingresos_totales_cliente': cliente.amt_income_total,
+            'monto_anualidad_credito': cliente.amt_annuity,
+            'ratio_credito_ingreso': cliente.amt_credit / ingreso if ingreso > 0 else 0.0,
+            'ratio_anualidad_ingreso': cliente.amt_annuity / ingreso if ingreso > 0 else 0.0,
+            'cantidad_hijos': 0,
+            'genero_M': 1 if cliente.CODE_GENDER == 'M' else 0,
+            'genero_XNA': 1 if cliente.CODE_GENDER == 'XNA' else 0,
+            'nivel_educativo_Higher education': 1 if cliente.NAME_EDUCATION_TYPE == 'Higher education' else 0,
+            'nivel_educativo_Incomplete higher': 1 if cliente.NAME_EDUCATION_TYPE == 'Incomplete higher' else 0,
+            'nivel_educativo_Lower secondary': 1 if cliente.NAME_EDUCATION_TYPE == 'Lower secondary' else 0,
+            'nivel_educativo_Secondary / secondary special': 1 if cliente.NAME_EDUCATION_TYPE == 'Secondary / secondary special' else 0,
+            'estado_civil_Married': 0,
+            'estado_civil_Separated': 0,
+            'estado_civil_Single / not married': 0,
+            'estado_civil_Unknown': 0,
+            'estado_civil_Widow': 0
+        }
+        df_inf_trad = pd.DataFrame([data_dict_trad])
+        df_inf_trad = df_inf_trad.reindex(columns=columnas_tradicionales, fill_value=0)
+        
+        prob_trad = float(modelo_tradicional.predict_proba(df_inf_trad)[0][1] * 100)
+        estado_trad = "APROBADO" if prob_trad < 40.0 else "RECHAZADO"
+        
+        # Rescate comercial (tradicional rechaza pero enriquecido aprueba)
+        rescate_comercial = bool(estado_trad == "RECHAZADO" and estado_enr == "APROBADO")
+        
+        return {
+            "tradicional": {
+                "probabilidad_impago": round(prob_trad, 2),
+                "estado": estado_trad
+            },
+            "enriquecido": {
+                "probabilidad_impago": round(prob_enr, 2),
+                "estado": estado_enr
+            },
+            "rescate_comercial": rescate_comercial
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error en inferencia comparativa: {str(e)}"
         )
 
 @app.get("/dashboard/metrics")

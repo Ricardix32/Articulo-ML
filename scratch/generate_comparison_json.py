@@ -6,7 +6,7 @@ import json
 import re
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc, confusion_matrix, recall_score, f1_score
-from scipy.stats import chi2
+from scipy.stats import chi2, norm
 
 def clean_column_names(df):
     clean_cols = []
@@ -15,6 +15,103 @@ def clean_column_names(df):
         clean_cols.append(clean_col)
     df.columns = clean_cols
     return df
+
+# ----------------------------------------------------
+# IMPLEMENTACIÓN MATEMÁTICA DEL TEST DE DELONG RÁPIDO
+# ----------------------------------------------------
+def compute_midrank(x):
+    """Computes midranks of a 1D numpy array."""
+    J = np.argsort(x)
+    Z = x[J]
+    N = len(x)
+    T = np.zeros(N)
+    i = 0
+    while i < N:
+        j = i
+        while j < N and Z[j] == Z[i]:
+            j += 1
+        T[i:j] = 0.5 * (i + j - 1)
+        i = j
+    T2 = np.zeros(N)
+    T2[J] = T
+    return T2
+
+def fastDeLong(predictions_sorted_transposed, label_1_count):
+    """
+    Computes DeLong covariance matrix of AUCs.
+    Based on Xu Sun and Weichao Xu (2014) O(N log N) optimization.
+    """
+    m = label_1_count
+    n = predictions_sorted_transposed.shape[1] - m
+    k = predictions_sorted_transposed.shape[0]
+    
+    tx = np.zeros((k, m))
+    ty = np.zeros((k, n))
+    tz = np.zeros((k, m + n))
+    
+    for i in range(k):
+        tx[i] = compute_midrank(predictions_sorted_transposed[i, :m])
+        ty[i] = compute_midrank(predictions_sorted_transposed[i, m:])
+        tz[i] = compute_midrank(predictions_sorted_transposed[i, :])
+        
+    sx = np.zeros((k, k))
+    sy = np.zeros((k, k))
+    
+    for i in range(k):
+        for j in range(k):
+            # Positives structural components
+            v10_i = (tz[i, :m] - tx[i]) / n
+            v10_j = (tz[j, :m] - tx[j]) / n
+            sx[i, j] = np.cov(v10_i, v10_j)[0, 1] if m > 1 else 0.0
+            
+            # Negatives structural components
+            v01_i = (ty[i] - tz[i, m:]) / m
+            v01_j = (ty[j] - tz[j, m:]) / m
+            sy[i, j] = np.cov(v01_i, v01_j)[0, 1] if n > 1 else 0.0
+            
+    return sx / m + sy / n
+
+def delong_roc_test(ground_truth, predictions_one, predictions_two):
+    """
+    Compares two correlated ROC curves using DeLong's test.
+    Returns: auc_one, auc_two, p_value, z_statistic, variance
+    """
+    ground_truth = np.array(ground_truth)
+    predictions_one = np.array(predictions_one)
+    predictions_two = np.array(predictions_two)
+    
+    # Sort samples so that positive class comes first
+    pos_mask = (ground_truth == 1)
+    neg_mask = (ground_truth == 0)
+    
+    sorted_idx = np.hstack([np.where(pos_mask)[0], np.where(neg_mask)[0]])
+    ground_truth = ground_truth[sorted_idx]
+    predictions_one = predictions_one[sorted_idx]
+    predictions_two = predictions_two[sorted_idx]
+    
+    m = np.sum(pos_mask)
+    n = len(ground_truth) - m
+    
+    preds = np.vstack([predictions_one, predictions_two])
+    cov = fastDeLong(preds, m)
+    
+    # Calculate AUCs using ranks (Mann-Whitney U relation)
+    tz_one = compute_midrank(predictions_one)
+    tz_two = compute_midrank(predictions_two)
+    
+    auc_one = (np.mean(tz_one[:m]) - (m - 1) / 2) / n
+    auc_two = (np.mean(tz_two[:m]) - (m - 1) / 2) / n
+    
+    # Variance of the difference
+    var = cov[0, 0] + cov[1, 1] - 2 * cov[0, 1]
+    if var > 0:
+        z = (auc_one - auc_two) / np.sqrt(var)
+        p_value = 2 * (1 - norm.cdf(np.abs(z)))
+    else:
+        z = 0.0
+        p_value = 1.0
+        
+    return auc_one, auc_two, p_value, z, var
 
 def main():
     print("Conectando a PostgreSQL...")
@@ -108,15 +205,18 @@ def main():
     probs_enr = model_1.predict_proba(X_enr_aligned)[:, 1]
     
     # ----------------------------------------------------
-    # METRICAS DE EVALUACION
+    # METRICAS DE EVALUACION Y DELONG TEST
     # ----------------------------------------------------
-    print("Calculando metricas y curvas...")
+    print("Calculando metricas y aplicando Test de DeLong...")
     # Umbral por defecto de calibración en la API
     threshold = 0.40
     preds_trad = (probs_trad >= threshold).astype(int)
     preds_enr = (probs_enr >= threshold).astype(int)
     
-    # AUC-ROC
+    # DeLong test
+    auc_t_dl, auc_e_dl, p_val_delong, z_stat_delong, cov_val = delong_roc_test(y_test, probs_trad, probs_enr)
+    
+    # AUC-ROC tradicional
     fpr_t, tpr_t, _ = roc_curve(y_test, probs_trad)
     fpr_e, tpr_e, _ = roc_curve(y_test, probs_enr)
     
@@ -142,7 +242,6 @@ def main():
     # TEST DE MCNEMAR INTER-ESCENARIO
     # ----------------------------------------------------
     print("Aplicando el Test de McNemar Inter-Escenario...")
-    # Matriz de contingencia inter-escenario (aciertos y errores)
     correct_trad = (preds_trad == y_test)
     correct_enr = (preds_enr == y_test)
     
@@ -153,22 +252,21 @@ def main():
     
     contingency_table = [[int(c_00), int(c_01)], [int(c_10), int(c_11)]]
     
-    # Calcular test McNemar con corrección de Edwards
     b = c_01
     c = c_10
     denominador = b + c
     if denominador > 0:
         chi2_stat = (abs(b - c) - 1) ** 2 / denominador
-        p_val = chi2.sf(chi2_stat, 1)
+        p_val_mcnemar = chi2.sf(chi2_stat, 1)
     else:
         chi2_stat = 0.0
-        p_val = 1.0
+        p_val_mcnemar = 1.0
         
     mcnemar_data = {
         "contingency_table": contingency_table,
         "statistic": float(chi2_stat),
-        "p_value": float(p_val),
-        "significant": bool(p_val < 0.05)
+        "p_value": float(p_val_mcnemar),
+        "significant": bool(p_val_mcnemar < 0.05)
     }
 
     # ----------------------------------------------------
@@ -208,6 +306,12 @@ def main():
         },
         "fpr_grid": grid.tolist(),
         "mcnemar": mcnemar_data,
+        "delong": {
+            "p_value": float(p_val_delong),
+            "z_statistic": float(z_stat_delong),
+            "variance": float(cov_val),
+            "significant": bool(p_val_delong < 0.05)
+        },
         "delta": {
             "auc": float(auc_e - auc_t),
             "recall": float(recall_e - recall_t),
@@ -221,7 +325,7 @@ def main():
         json.dump(comparison_data, f, indent=2)
         
     # ----------------------------------------------------
-    # GENERAR IMAGENES DE COMPARACION PARA EL FRONTEND (REACT)
+    # GENERAR IMAGENES DE COMPARACION CON ANOTACION DELONG
     # ----------------------------------------------------
     print("Guardando graficos comparativos en static/...")
     import matplotlib.pyplot as plt
@@ -231,6 +335,13 @@ def main():
     plt.plot(grid, tpr_e_interp, label=f"Enriquecido (AUC = {auc_e:.4f})", color="#2563eb", linewidth=2.5)
     plt.plot(grid, tpr_t_interp, label=f"Tradicional (AUC = {auc_t:.4f})", color="#fbbf24", linewidth=2)
     plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+    
+    # Caja de texto con p-valor de DeLong
+    sig_text = "Si" if p_val_delong < 0.05 else "No"
+    info_text = f"DeLong Test:\np-val = {p_val_delong:.6f}\nSignificativo: {sig_text}"
+    plt.gca().text(
+        0.55, 0.15, info_text, fontsize=9, bbox=dict(boxstyle="round,pad=0.5", facecolor="#ffffff", alpha=0.9, edgecolor="#dddddd")
+    )
     
     plt.title("Curvas ROC Superpuestas (Delta Estadistico)", fontsize=12, fontweight='bold')
     plt.xlabel("Tasa de Falsos Positivos (FPR)", fontsize=10)
@@ -274,7 +385,8 @@ def main():
     print(f"Delta AUC: +{auc_e - auc_t:.4f}")
     print(f"Delta Recall (Sensibilidad): +{recall_e - recall_t:.4f}")
     print(f"Reduccion de Falsos Negativos (Creditos Incobrables): {cm_t[1][0] - cm_e[1][0]} creditos detectados adicionales.")
-    print(f"p-valor de McNemar Inter-Escenario: {p_val:.6f} (Significativo: {p_val < 0.05})")
+    print(f"p-valor de McNemar Inter-Escenario: {p_val_mcnemar:.6f} (Significativo: {p_val_mcnemar < 0.05})")
+    print(f"p-valor de DeLong Inter-Escenario: {p_val_delong:.6f} (Significativo: {p_val_delong < 0.05})")
 
 if __name__ == "__main__":
     main()

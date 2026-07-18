@@ -40,7 +40,7 @@ export default function Evaluador() {
     setResultado(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/predict`, {
+      const response = await fetch(`${API_BASE_URL}/predict_compare`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -282,59 +282,95 @@ export default function Evaluador() {
         </div>
       </div>
 
-      {/* MODAL DE RESULTADOS */}
+      {/* MODAL DE RESULTADOS DUALES LADO A LADO */}
       {resultado && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-md glass p-8 rounded-2xl shadow-2xl relative border border-white/10 animate-fade-in">
-            <div className="flex flex-col items-center text-center">
-              {resultado.estado === 'APROBADO' ? (
-                <>
-                  <div className="w-20 h-20 bg-green-950/30 border border-green-500/30 rounded-full flex items-center justify-center mb-6">
-                    <CheckCircle2 className="w-12 h-12 text-green-400" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-green-400 mb-2">Crédito Aprobado</h3>
-                  <p className="text-sm text-gray-300 max-w-sm mb-6">
-                    El motor de inferencia analítica (LightGBM) ha validado los datos del cliente con éxito.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <div className="w-20 h-20 bg-red-950/30 border border-red-500/30 rounded-full flex items-center justify-center mb-6">
-                    <XCircle className="w-12 h-12 text-red-400" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-red-400 mb-2">Crédito Rechazado</h3>
-                  <p className="text-sm text-gray-300 max-w-sm mb-6">
-                    La evaluación ha superado el umbral del 40.0% de probabilidad de impago.
-                  </p>
-                </>
-              )}
-
-              {/* Caja de Métricas */}
-              <div className="w-full p-4 bg-navy-900/60 rounded-xl border border-navy-800 space-y-3 mb-6">
-                <div className="flex items-center justify-between text-xs text-gray-400">
-                  <span>Probabilidad de Impago:</span>
-                  <span className={`font-bold ${resultado.estado === 'APROBADO' ? 'text-green-400' : 'text-red-400'}`}>
-                    {resultado.probabilidad_impago}%
-                  </span>
+          <div className="w-full max-w-2xl glass p-8 rounded-2xl shadow-2xl relative border border-white/10 animate-fade-in max-h-[90vh] overflow-y-auto">
+            {/* Banner de Rescate Comercial */}
+            {resultado.rescate_comercial && (
+              <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center gap-3 text-emerald-400 animate-pulse">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0">
+                  <UserCheck className="w-5 h-5 text-emerald-400" />
                 </div>
-                <div className="w-full bg-navy-850 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full ${resultado.estado === 'APROBADO' ? 'bg-green-500' : 'bg-red-500'}`}
-                    style={{ width: `${resultado.probabilidad_impago}%` }}
-                  ></div>
-                </div>
-                <div className="text-[10px] text-gray-500 text-left leading-relaxed">
-                  *Este dictamen se realiza usando inferencia matemática directa sobre {resultado.estado === 'APROBADO' ? 'baja' : 'alta'} correspondencia con perfiles históricos de impago.
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider">¡Rescate Comercial Exitoso!</h4>
+                  <p className="text-[11px] text-emerald-300/90 mt-0.5">
+                    La arquitectura de datos enriquecidos previno un rechazo erróneo del cliente.
+                  </p>
                 </div>
               </div>
+            )}
 
-              <button
-                onClick={() => setResultado(null)}
-                className="w-full py-3 bg-navy-800 hover:bg-navy-700 text-white font-semibold text-sm rounded-lg transition-colors"
-              >
-                Cerrar Dictamen
-              </button>
+            <h3 className="text-lg font-bold text-white text-center mb-6">Dictamen Analítico Dual de Originación</h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              {/* Tarjeta Tradicional */}
+              <div className="glass p-5 rounded-xl border border-navy-800 flex flex-col justify-between space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-bold text-gray-400">Escenario A (Tradicional)</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    resultado.tradicional.estado === 'APROBADO' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
+                  }`}>
+                    {resultado.tradicional.estado}
+                  </span>
+                </div>
+                
+                <div className="flex flex-col items-center py-2 text-center">
+                  {resultado.tradicional.estado === 'APROBADO' ? (
+                    <CheckCircle2 className="w-10 h-10 text-green-400 mb-2" />
+                  ) : (
+                    <XCircle className="w-10 h-10 text-red-400 mb-2" />
+                  )}
+                  <span className="text-[10px] text-gray-400">Probabilidad de Impago:</span>
+                  <span className="text-xl font-bold font-mono text-white mt-0.5">{resultado.tradicional.probabilidad_impago}%</span>
+                </div>
+
+                <p className="text-[10px] text-gray-400 text-center leading-relaxed">
+                  {resultado.tradicional.estado === 'APROBADO' 
+                    ? 'Viable según variables tradicionales de ingreso y cuota básica.' 
+                    : 'Rechazado debido a que los ratios financieros sobrepasan el umbral de riesgo del 40.0%.'}
+                </p>
+              </div>
+
+              {/* Tarjeta Enriquecida */}
+              <div className="glass p-5 rounded-xl border border-navy-800 flex flex-col justify-between space-y-4 relative overflow-hidden">
+                {resultado.rescate_comercial && (
+                  <div className="absolute top-0 right-0 w-16 h-16 bg-emerald-500/5 rounded-full blur-xl pointer-events-none"></div>
+                )}
+                
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-bold text-blue-400">Escenario B (Enriquecido)</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    resultado.enriquecido.estado === 'APROBADO' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
+                  }`}>
+                    {resultado.enriquecido.estado}
+                  </span>
+                </div>
+                
+                <div className="flex flex-col items-center py-2 text-center">
+                  {resultado.enriquecido.estado === 'APROBADO' ? (
+                    <CheckCircle2 className="w-10 h-10 text-green-400 mb-2" />
+                  ) : (
+                    <XCircle className="w-10 h-10 text-red-400 mb-2" />
+                  )}
+                  <span className="text-[10px] text-gray-400">Probabilidad de Impago:</span>
+                  <span className="text-xl font-bold font-mono text-white mt-0.5">{resultado.enriquecido.probabilidad_impago}%</span>
+                </div>
+
+                <p className="text-[10px] text-gray-400 text-center leading-relaxed">
+                  {resultado.enriquecido.estado === 'APROBADO' 
+                    ? 'Aprobado. Las variables de comportamiento del feature store compensaron los ratios tradicionales.' 
+                    : 'Rechazado. La probabilidad calibrada con el historial cruzado es superior al 40.0%.'}
+                </p>
+              </div>
             </div>
+
+            <button
+              onClick={() => setResultado(null)}
+              className="w-full py-3 bg-navy-800 hover:bg-navy-700 text-white font-semibold text-sm rounded-lg transition-colors mt-2"
+            >
+              Cerrar Dictamen Dual
+            </button>
           </div>
         </div>
       )}

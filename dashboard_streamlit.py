@@ -458,6 +458,40 @@ else:
                         "significativas entre ambos clasificadores."
                     )
 
+            # 4. Test de DeLong Inter-Escenario
+            st.markdown("---")
+            st.markdown("#### 4. Validación de Diferencia de AUC - Test de DeLong")
+            st.markdown(
+                "Para comprobar si la diferencia de las capacidades discriminantes (AUC) entre los modelos "
+                "Tradicional y Enriquecido es estadísticamente significativa en lugar de un artefacto del muestreo, "
+                "aplicamos el test de hipótesis de DeLong sobre curvas ROC correlacionadas."
+            )
+            
+            if 'delong' in comparison:
+                dl_data = comparison['delong']
+                col_dl_l, col_dl_r = st.columns([1, 2])
+                
+                with col_dl_l:
+                    st.markdown("**Métricas del Test de DeLong:**")
+                    st.write(f"- **Estadístico Z:** `{dl_data['z_statistic']:.4f}`")
+                    st.write(f"- **P-Valor (p-value):** `{dl_data['p_value']:.8f}`")
+                    st.write(f"- **Varianza de Diferencia:** `{dl_data['variance']:.6f}`")
+                    st.write(f"- **¿Diferencia Significativa? (α = 0.05):** `{'SÍ' if dl_data['significant'] else 'NO'}`")
+                    
+                with col_dl_r:
+                    st.markdown("**Conclusión de la Prueba de DeLong:**")
+                    if dl_data['significant']:
+                        st.markdown(
+                            f"Dado que el p-valor es menor a 0.05 (`{dl_data['p_value']:.6f} < 0.05`), **se rechaza la hipótesis nula (H0)**. "
+                            f"Existe evidencia estadística robusta para afirmar que la diferencia en la capacidad discriminativa (AUC) entre el "
+                            f"modelo Enriquecido y el Tradicional es **estadísticamente significativa**."
+                        )
+                    else:
+                        st.markdown(
+                            f"Dado que el p-valor es mayor o igual a 0.05, **no se puede rechazar la hipótesis nula (H0)**. "
+                            f"No hay diferencias estadísticamente significativas en el AUC global de ambos modelos."
+                        )
+
     # =====================================================================
     # 6. SECCIÓN: Módulo de Descargas de Reportes
     # =====================================================================

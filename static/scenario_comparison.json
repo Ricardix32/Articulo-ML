@@ -349,6 +349,12 @@
     "p_value": 1.5308219798192757e-213,
     "significant": true
   },
+  "delong": {
+    "p_value": 1.4274343320463956e-05,
+    "z_statistic": 4.33959825591118,
+    "variance": 1.0965218263559408e-05,
+    "significant": true
+  },
   "delta": {
     "auc": -0.014370046264991831,
     "recall": -0.06827794561933531,
